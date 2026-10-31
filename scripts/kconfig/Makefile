@@ -101,10 +101,15 @@ PHONY += allnoconfig allyesconfig allmodconfig alldefconfig randconfig
 allnoconfig allyesconfig allmodconfig alldefconfig randconfig: $(obj)/conf
 	$< --$@ $(Kconfig)
 
-PHONY += listnewconfig oldnoconfig savedefconfig defconfig
+PHONY += listnewconfig oldnoconfig olddefconfig savedefconfig defconfig
 
 listnewconfig oldnoconfig: $(obj)/conf
 	$< --$@ $(Kconfig)
+
+# Newer kernels renamed oldnoconfig, which keeps the defaults for new
+# symbols, to olddefconfig
+olddefconfig: $(obj)/conf
+	$< --oldnoconfig $(Kconfig)
 
 savedefconfig: $(obj)/conf
 	$< --$@=defconfig $(Kconfig)
@@ -140,6 +145,7 @@ help:
 	@echo  '  randconfig	  - New config with random answer to all options'
 	@echo  '  listnewconfig   - List new options'
 	@echo  '  oldnoconfig     - Same as silentoldconfig but set new symbols to n (unset)'
+	@echo  '  olddefconfig    - Alias for oldnoconfig'
 
 # lxdialog stuff
 check-lxdialog  := $(srctree)/$(src)/lxdialog/check-lxdialog.sh
