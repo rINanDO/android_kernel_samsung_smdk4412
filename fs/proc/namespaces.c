@@ -32,6 +32,29 @@ static const struct file_operations ns_file_operations = {
 	.llseek		= no_llseek,
 };
 
+/*
+ * The namespace is captured when the dentry is instantiated. Never reuse a
+ * cached dentry, so that an open after unshare() or setns() refers to the
+ * namespace the task is in now rather than the one it was in at first lookup.
+ */
+static int proc_ns_revalidate(struct dentry *dentry, struct nameidata *nd)
+{
+	if (nd && nd->flags & LOOKUP_RCU)
+		return -ECHILD;
+
+	return 0;
+}
+
+static int proc_ns_delete_dentry(const struct dentry *dentry)
+{
+	return 1;
+}
+
+static const struct dentry_operations proc_ns_dentry_operations = {
+	.d_revalidate	= proc_ns_revalidate,
+	.d_delete	= proc_ns_delete_dentry,
+};
+
 static struct dentry *proc_ns_instantiate(struct inode *dir,
 	struct dentry *dentry, struct task_struct *task, const void *ptr)
 {
@@ -55,7 +78,7 @@ static struct dentry *proc_ns_instantiate(struct inode *dir,
 	ei->ns_ops    = ns_ops;
 	ei->ns	      = ns;
 
-	d_set_d_op(dentry, &pid_dentry_operations);
+	d_set_d_op(dentry, &proc_ns_dentry_operations);
 	d_add(dentry, inode);
 	/* Close the race of the process dying before we return the dentry */
 	if (pid_revalidate(dentry, NULL))
