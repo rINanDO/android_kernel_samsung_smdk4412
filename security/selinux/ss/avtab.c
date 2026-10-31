@@ -513,6 +513,25 @@ int avtab_read_item(struct avtab *a, void *fp, struct policydb *pol,
 			printk(KERN_ERR "SELinux: avtab: truncated entry\n");
 			return rc;
 		}
+		if (!avtab_android_m_compat &&
+		    xperms.specified == AVTAB_XPERMS_NLMSG) {
+			/*
+			 * Netlink message type rules (Linux 6.13). This kernel
+			 * does not enforce them, so read the entry and drop it.
+			 */
+			rc = next_entry(&xperms.driver, fp, sizeof(u8));
+			if (rc) {
+				printk(KERN_ERR "SELinux: avtab: truncated entry\n");
+				return rc;
+			}
+			rc = next_entry(buf32, fp,
+					sizeof(u32)*ARRAY_SIZE(xperms.perms.p));
+			if (rc) {
+				printk(KERN_ERR "SELinux: avtab: truncated entry\n");
+				return rc;
+			}
+			return 0;
+		}
 		if (avtab_android_m_compat ||
 			    ((xperms.specified != AVTAB_XPERMS_IOCTLFUNCTION) &&
 			    (xperms.specified != AVTAB_XPERMS_IOCTLDRIVER) &&
