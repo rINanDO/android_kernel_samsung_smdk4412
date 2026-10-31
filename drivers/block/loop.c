@@ -73,6 +73,7 @@
 #include <linux/highmem.h>
 #include <linux/kthread.h>
 #include <linux/splice.h>
+#include <linux/miscdevice.h>
 #include <linux/sysfs.h>
 
 #include <asm/uaccess.h>
@@ -1657,6 +1658,124 @@ static void loop_del_one(struct loop_device *lo)
 	loop_free(lo);
 }
 
+/*
+ * /dev/loop-control, backported from Linux 3.1 for userspace that allocates
+ * loop devices on demand, such as apexd. Callers hold loop_devices_mutex.
+ */
+static struct loop_device *loop_lookup(int i)
+{
+	struct loop_device *lo;
+
+	list_for_each_entry(lo, &loop_devices, lo_list) {
+		if (lo->lo_number == i)
+			return lo;
+	}
+	return NULL;
+}
+
+static int loop_index_valid(int i)
+{
+	if (i < 0 || i >= (1 << (MINORBITS - part_shift)))
+		return 0;
+	if (max_loop && i >= max_loop)
+		return 0;
+	return 1;
+}
+
+static int loop_add(int i)
+{
+	struct loop_device *lo;
+
+	if (i < 0) {
+		/* Pick the lowest unused index */
+		for (i = 0; loop_lookup(i); i++)
+			;
+	}
+	if (!loop_index_valid(i))
+		return -EINVAL;
+	if (loop_lookup(i))
+		return -EEXIST;
+
+	lo = loop_init_one(i);
+	if (!lo)
+		return -ENOMEM;
+	return lo->lo_number;
+}
+
+static int loop_remove(int i)
+{
+	struct loop_device *lo = loop_lookup(i);
+	int busy;
+
+	if (!lo)
+		return -ENODEV;
+
+	mutex_lock(&lo->lo_ctl_mutex);
+	busy = lo->lo_state != Lo_unbound || lo->lo_refcnt > 0;
+	mutex_unlock(&lo->lo_ctl_mutex);
+	if (busy)
+		return -EBUSY;
+
+	loop_del_one(lo);
+	return i;
+}
+
+static int loop_get_free(void)
+{
+	struct loop_device *lo;
+	int unbound;
+
+	list_for_each_entry(lo, &loop_devices, lo_list) {
+		mutex_lock(&lo->lo_ctl_mutex);
+		unbound = lo->lo_state == Lo_unbound;
+		mutex_unlock(&lo->lo_ctl_mutex);
+		if (unbound)
+			return lo->lo_number;
+	}
+	return loop_add(-1);
+}
+
+static long loop_control_ioctl(struct file *file, unsigned int cmd,
+			       unsigned long parm)
+{
+	int ret;
+
+	mutex_lock(&loop_devices_mutex);
+	switch (cmd) {
+	case LOOP_CTL_ADD:
+		ret = loop_add((int)parm);
+		break;
+	case LOOP_CTL_REMOVE:
+		ret = loop_remove((int)parm);
+		break;
+	case LOOP_CTL_GET_FREE:
+		ret = loop_get_free();
+		break;
+	default:
+		ret = -ENOSYS;
+	}
+	mutex_unlock(&loop_devices_mutex);
+
+	return ret;
+}
+
+static const struct file_operations loop_ctl_fops = {
+	.open		= nonseekable_open,
+	.unlocked_ioctl	= loop_control_ioctl,
+	.compat_ioctl	= loop_control_ioctl,
+	.owner		= THIS_MODULE,
+	.llseek		= noop_llseek,
+};
+
+static struct miscdevice loop_misc = {
+	.minor		= LOOP_CTRL_MINOR,
+	.name		= "loop-control",
+	.fops		= &loop_ctl_fops,
+};
+
+MODULE_ALIAS_MISCDEV(LOOP_CTRL_MINOR);
+MODULE_ALIAS("devname:loop-control");
+
 static struct kobject *loop_probe(dev_t dev, int *part, void *data)
 {
 	struct loop_device *lo;
@@ -1673,7 +1792,7 @@ static struct kobject *loop_probe(dev_t dev, int *part, void *data)
 
 static int __init loop_init(void)
 {
-	int i, nr;
+	int i, nr, err;
 	unsigned long range;
 	struct loop_device *lo, *next;
 
@@ -1721,8 +1840,14 @@ static int __init loop_init(void)
 		range = 1UL << MINORBITS;
 	}
 
-	if (register_blkdev(LOOP_MAJOR, "loop"))
-		return -EIO;
+	err = misc_register(&loop_misc);
+	if (err < 0)
+		return err;
+
+	if (register_blkdev(LOOP_MAJOR, "loop")) {
+		err = -EIO;
+		goto misc_out;
+	}
 
 	for (i = 0; i < nr; i++) {
 		lo = loop_alloc(i);
@@ -1749,7 +1874,10 @@ Enomem:
 		loop_free(lo);
 
 	unregister_blkdev(LOOP_MAJOR, "loop");
-	return -ENOMEM;
+	err = -ENOMEM;
+misc_out:
+	misc_deregister(&loop_misc);
+	return err;
 }
 
 static void __exit loop_exit(void)
@@ -1764,6 +1892,8 @@ static void __exit loop_exit(void)
 
 	blk_unregister_region(MKDEV(LOOP_MAJOR, 0), range);
 	unregister_blkdev(LOOP_MAJOR, "loop");
+
+	misc_deregister(&loop_misc);
 }
 
 module_init(loop_init);
