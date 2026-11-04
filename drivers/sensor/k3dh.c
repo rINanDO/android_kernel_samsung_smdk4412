@@ -38,7 +38,6 @@
  * and output data rate set to 400Hz.  Output is via a ioctl read call.
  */
 #define DEFAULT_POWER_ON_SETTING (ODR400 | ENABLE_ALL_AXES)
-#define ACC_DEV_MAJOR 241
 
 #define CALIBRATION_FILE_PATH	"/efs/calibration_data"
 #define CAL_DATA_AMOUNT	20
@@ -680,8 +679,14 @@ static int k3dh_probe(struct i2c_client *client,
 		goto err_class_create;
 	}
 
-	dev_t = device_create(data->acc_class, NULL,
-				MKDEV(ACC_DEV_MAJOR, 0), "%s", "accelerometer");
+	/*
+	 * No dev_t: nothing is registered at the old major 241, and a dev_t
+	 * makes ueventd create /dev/accelerometer for this class device too.
+	 * That races with the real misc device; when it wins, libakm can't
+	 * open the accelerometer and the AKM sensors stay dead until reboot.
+	 */
+	dev_t = device_create(data->acc_class, NULL, 0, NULL,
+				"%s", "accelerometer");
 	if (IS_ERR(dev_t)) {
 		pr_err("%s: class create failed(accelerometer)\n", __func__);
 		err = PTR_ERR(dev_t);
@@ -762,7 +767,7 @@ err_cal_device_create_file:
 err_cal_device_create:
 	device_remove_file(dev_t, &dev_attr_acc_file);
 err_acc_device_create_file:
-	device_destroy(data->acc_class, MKDEV(ACC_DEV_MAJOR, 0));
+	device_destroy(data->acc_class, 0);
 err_acc_device_create:
 	class_destroy(data->acc_class);
 err_class_create:
@@ -802,7 +807,7 @@ static int k3dh_remove(struct i2c_client *client)
 
 #if defined(CONFIG_MACH_U1) || defined(CONFIG_MACH_TRATS)
 	device_destroy(sec_class, 0);
-	device_destroy(data->acc_class, MKDEV(ACC_DEV_MAJOR, 0));
+	device_destroy(data->acc_class, 0);
 	class_destroy(data->acc_class);
 #else
 	device_remove_file(data->dev, &dev_attr_name);
