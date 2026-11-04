@@ -286,10 +286,17 @@ static inline void tracehook_report_clone(struct pt_regs *regs,
 {
 	if (unlikely(child->ptrace)) {
 		/*
-		 * It doesn't matter who attached/attaching to this
-		 * task, the pending SIGSTOP is right in any case.
+		 * A child auto-attached by a PTRACE_SEIZE tracer starts in a
+		 * PTRACE_EVENT_STOP trap instead of with a SIGSTOP, as in 3.1+.
+		 * Android's crash_dump depends on that.
 		 */
-		sigaddset(&child->pending.signal, SIGSTOP);
+		if (child->ptrace & PT_SEIZED) {
+			spin_lock_irq(&child->sighand->siglock);
+			task_set_jobctl_pending(child, JOBCTL_TRAP_STOP);
+			spin_unlock_irq(&child->sighand->siglock);
+		} else {
+			sigaddset(&child->pending.signal, SIGSTOP);
+		}
 		set_tsk_thread_flag(child, TIF_SIGPENDING);
 	}
 }
