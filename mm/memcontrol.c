@@ -3792,6 +3792,8 @@ static int mem_cgroup_force_empty(struct mem_cgroup *mem, bool free_all)
 	int node, zid, shrink;
 	int nr_retries = MEM_CGROUP_RECLAIM_RETRIES;
 	struct cgroup *cgrp = mem->css.cgroup;
+	unsigned long long last_usage = ULLONG_MAX;
+	unsigned long progress_time = jiffies;
 
 	css_get(&mem->css);
 
@@ -3831,6 +3833,22 @@ move_account:
 		if (ret == -ENOMEM)
 			goto try_to_free;
 		cond_resched();
+		/*
+		 * Charges that are not on any LRU list can't be moved, and
+		 * then this loops forever. rmdir comes here from init during
+		 * shutdown and from system_server when it kills an app, so
+		 * give up with -EBUSY once the usage stops dropping. The
+		 * callers treat that as a cgroup that can't be removed yet.
+		 */
+		if (mem->res.usage < last_usage) {
+			last_usage = mem->res.usage;
+			progress_time = jiffies;
+		} else if (time_after(jiffies, progress_time + HZ)) {
+			pr_warn("memcg: force_empty: usage stuck at %llu bytes, giving up\n",
+				mem->res.usage);
+			ret = -EBUSY;
+			goto out;
+		}
 	/* "ret" should also be checked to ensure all lists are empty. */
 	} while (mem->res.usage > 0 || ret);
 out:
