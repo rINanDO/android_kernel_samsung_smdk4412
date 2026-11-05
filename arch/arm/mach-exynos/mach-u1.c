@@ -7535,6 +7535,34 @@ static struct s5p_platform_cec hdmi_cec_data __initdata = {
 #endif
 
 #if defined(CONFIG_S5P_MEM_CMA)
+/*
+ * The bootloader passes the address of its logo in s3cfb.bootloaderfb. The
+ * display keeps scanning it out until Android sets up the framebuffer, so
+ * no media region may be placed over it, or the logo turns into noise.
+ */
+#define U1_BOOTLOADER_FB_SIZE	(480 * 800 * 4)
+static phys_addr_t u1_bootloader_fb __initdata;
+
+static int __init u1_bootloader_fb_setup(char *str)
+{
+	u1_bootloader_fb = memparse(str, NULL);
+	return 0;
+}
+early_param("s3cfb.bootloaderfb", u1_bootloader_fb_setup);
+
+static void __init u1_reserve_bootloader_fb(void)
+{
+	phys_addr_t size = PAGE_ALIGN(U1_BOOTLOADER_FB_SIZE);
+
+	if (!u1_bootloader_fb)
+		return;
+
+	if (memblock_is_region_reserved(u1_bootloader_fb, size) ||
+	    memblock_reserve(u1_bootloader_fb, size) < 0)
+		pr_warn("u1: could not reserve the bootloader logo at 0x%08x\n",
+			(unsigned int)u1_bootloader_fb);
+}
+
 static void __init exynos4_cma_region_reserve(struct cma_region *regions_normal,
 					      struct cma_region *regions_secure)
 {
@@ -7718,6 +7746,7 @@ static void __init exynos4_reserve_mem(void)
 		"s5p-fimg2d=fimg2d;"
 		"s5p-tvout=tvout";
 
+	u1_reserve_bootloader_fb();
 	cma_set_defaults(regions, map);
 	exynos4_cma_region_reserve(regions, NULL);
 
