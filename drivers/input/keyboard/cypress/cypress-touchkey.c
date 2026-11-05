@@ -137,6 +137,15 @@ static int led_on_keypress = 0;
 static bool touchkey_pressed = false;
 static bool touchkey_pressed_reversed = false;
 
+/* An LED command sent while a key is touched makes the controller report
+ * the key as released, which breaks long presses. Hold such commands back
+ * until the key is released. */
+static DEFINE_MUTEX(touchkey_led_lock);
+static bool touchkey_key_held;
+static int touchkey_led_pending = -1;
+struct touchkey_i2c;
+static void touchkey_led_apply(struct touchkey_i2c *tkey_i2c, int data);
+
 static int touchkey_debug_count;
 static char touchkey_debug[104];
 
@@ -1001,6 +1010,16 @@ static irqreturn_t touchkey_interrupt(int irq, void *dev_id)
 			printk(KERN_DEBUG "[TouchKey] pressed:%d\n", pressed);
 		}
 		#endif
+
+		mutex_lock(&touchkey_led_lock);
+		touchkey_key_held = pressed;
+		if (!pressed && touchkey_led_pending >= 0) {
+			int led = touchkey_led_pending;
+
+			touchkey_led_pending = -1;
+			touchkey_led_apply(tkey_i2c, led);
+		}
+		mutex_unlock(&touchkey_led_lock);
 	}
 	set_touchkey_debug('A');
 
@@ -1176,6 +1195,10 @@ static int sec_touchkey_fb_suspend(struct touchkey_i2c *tkey_i2c)
 		input_report_key(tkey_i2c->input_dev,
 				 touchkey_keycode[i], 0);
 	}
+	mutex_lock(&touchkey_led_lock);
+	touchkey_key_held = false;
+	touchkey_led_pending = -1;
+	mutex_unlock(&touchkey_led_lock);
 	input_sync(tkey_i2c->input_dev);
 
 #ifdef CONFIG_TOUCHKEY_BLN
@@ -1468,7 +1491,6 @@ static ssize_t touchkey_led_control(struct device *dev,
 	struct touchkey_i2c *tkey_i2c = dev_get_drvdata(dev);
 	int data;
 	int ret;
-	static const int ledCmd[] = {TK_CMD_LED_OFF, TK_CMD_LED_ON};
 
 #if defined(CONFIG_TARGET_LOCALE_KOR)
 	if (touchkey_probe == false)
@@ -1480,12 +1502,31 @@ static ssize_t touchkey_led_control(struct device *dev,
 			__func__, __LINE__);
 		return size;
 	}
-	printk(KERN_DEBUG "[TouchKey] %s: %d\n", __func__, data);
+
+	mutex_lock(&touchkey_led_lock);
+	if (touchkey_key_held) {
+		printk(KERN_DEBUG "[TouchKey] %s: %d (deferred, key held)\n",
+			__func__, data);
+		touchkey_led_pending = data;
+	} else {
+		touchkey_led_apply(tkey_i2c, data);
+	}
+	mutex_unlock(&touchkey_led_lock);
+
+	return size;
+}
+
+static void touchkey_led_apply(struct touchkey_i2c *tkey_i2c, int data)
+{
+	int ret;
+	static const int ledCmd[] = {TK_CMD_LED_OFF, TK_CMD_LED_ON};
+
+	printk(KERN_DEBUG "[TouchKey] touchkey_led_control: %d\n", data);
 #ifdef CONFIG_TOUCHKEY_BLN
 	if (bln_enabled && bln_ongoing) {
 		printk(KERN_DEBUG
 			"[TouchKey] %s: Ignoring because BLN is active and ongoing\n", __func__);
-		return size;
+		return;
 	}
 #endif
 	touchkey_pressed_reversed = led_on_keypress && data > 0;
@@ -1499,14 +1540,14 @@ static ssize_t touchkey_led_control(struct device *dev,
 		cancel_work_sync(&led_fadeout_work);
 		led_abort_fade = 0;
 		schedule_work(&led_fadein_work);
-		return size;
+		return;
 	}
 	if (led_fadeout && data == 0 && touchkey_enable) {
 		led_abort_fade = 1;
 		cancel_work_sync(&led_fadein_work);
 		led_abort_fade = 0;
 		schedule_work(&led_fadeout_work);
-		return size;
+		return;
 	}
 
 	if (data > 1 && touchkey_enable) {
@@ -1517,7 +1558,7 @@ static ssize_t touchkey_led_control(struct device *dev,
 	if (data != 0 && data != 1) {
 		printk(KERN_DEBUG "[TouchKey] %s wrong cmd %x\n",
 			__func__, data);
-		return size;
+		return;
 	}
 
 #if defined(CONFIG_TARGET_LOCALE_NA)
@@ -1534,7 +1575,7 @@ static ssize_t touchkey_led_control(struct device *dev,
 		touchkey_led_status = data;
 	}
 
-	return size;
+	return;
 }
 
 #if defined(TK_USE_4KEY)
