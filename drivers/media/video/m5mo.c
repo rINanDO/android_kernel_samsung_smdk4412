@@ -2535,7 +2535,7 @@ static int m5mo_g_parm(struct v4l2_subdev *sd, struct v4l2_streamparm *a)
 static int m5mo_s_parm(struct v4l2_subdev *sd, struct v4l2_streamparm *a)
 {
 	struct m5mo_state *state = to_state(sd);
-	int err;
+	int err, reg;
 
 	u32 fps = a->parm.capture.timeperframe.denominator /
 					a->parm.capture.timeperframe.numerator;
@@ -2556,9 +2556,15 @@ static int m5mo_s_parm(struct v4l2_subdev *sd, struct v4l2_streamparm *a)
 	err = m5mo_set_mode(sd, M5MO_PARMSET_MODE);
 	CHECK_ERR(err);
 
-	cam_dbg("fixed fps %d\n", state->fps);
-	err = m5mo_writeb(sd, M5MO_CATEGORY_PARM,
-		M5MO_PARM_FLEX_FPS, state->fps != 30 ? state->fps : 0);
+	/*
+	 * The sensor runs ~9.7% faster than the FLEX_FPS value: 24 gives a
+	 * 38.0 ms and 25 a 36.4 ms frame period. Scale the requested rate so
+	 * that 24 and 25 fps come out within 1%. 30 means auto (0).
+	 */
+	reg = state->fps != 30 ?
+		max_t(int, 1, DIV_ROUND_CLOSEST(state->fps * 1000, M5MO_FLEX_FPS_SCALE)) : 0;
+	cam_dbg("fixed fps %d (FLEX_FPS %d)\n", state->fps, reg);
+	err = m5mo_writeb(sd, M5MO_CATEGORY_PARM, M5MO_PARM_FLEX_FPS, reg);
 	CHECK_ERR(err);
 
 	return 0;

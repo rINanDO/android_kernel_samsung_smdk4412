@@ -229,6 +229,8 @@ extern struct class *camera_class;
 #define M5MO_PARM_MON_SIZE	0x01
 #define M5MO_PARM_EFFECT	0x0B
 #define M5MO_PARM_FLEX_FPS	0x31
+/* Actual frame rate per FLEX_FPS unit, x1000 (measured) */
+#define M5MO_FLEX_FPS_SCALE	1097
 #define M5MO_PARM_HDMOVIE	0x32
 
 /* M5MO_CATEGORY_MON: 0x02 */
