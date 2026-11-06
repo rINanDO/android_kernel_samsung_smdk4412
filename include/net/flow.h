@@ -81,7 +81,7 @@ static inline void flowi4_init_output(struct flowi4 *fl4, int oif,
 				      __u32 mark, __u8 tos, __u8 scope,
 				      __u8 proto, __u8 flags,
 				      __be32 daddr, __be32 saddr,
-				      __be16 dport, __be16 sport)
+				      __be16 dport, __be16 sport, kuid_t uid)
 {
 	fl4->flowi4_oif = oif;
 	fl4->flowi4_iif = 0;
@@ -95,6 +95,7 @@ static inline void flowi4_init_output(struct flowi4 *fl4, int oif,
 	fl4->saddr = saddr;
 	fl4->fl4_dport = dport;
 	fl4->fl4_sport = sport;
+	fl4->flowi4_uid = uid;
 }
 
 /* Reset some input parameters after previous lookup */
