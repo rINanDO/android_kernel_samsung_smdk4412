@@ -562,11 +562,30 @@ static int fib_check_nh(struct fib_config *cfg, struct fib_info *fi,
 				.flowi4_scope = cfg->fc_scope + 1,
 				.flowi4_oif = nh->nh_oif,
 			};
+			struct fib_table *tbl = NULL;
 
 			/* It is not necessary, but requires a bit of thinking */
 			if (fl4.flowi4_scope < RT_SCOPE_LINK)
 				fl4.flowi4_scope = RT_SCOPE_LINK;
-			err = fib_lookup(net, &fl4, &res);
+
+			/* Look the gateway up in the table the route goes
+			 * into first, so a gateway reachable through a
+			 * route in that table is accepted even when the
+			 * policy rules would not reach it.
+			 */
+			if (cfg->fc_table) {
+				tbl = fib_get_table(net, cfg->fc_table);
+				if (tbl)
+					err = fib_table_lookup(tbl, &fl4, &res,
+							       FIB_LOOKUP_NOREF);
+			}
+			/* On error or if no table is given do a full
+			 * lookup. This is needed, for example, when the
+			 * nexthop is in the local table rather than in
+			 * the given one.
+			 */
+			if (!tbl || err)
+				err = fib_lookup(net, &fl4, &res);
 			if (err) {
 				rcu_read_unlock();
 				return err;
