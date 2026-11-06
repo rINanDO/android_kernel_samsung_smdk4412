@@ -1916,6 +1916,15 @@ int fimc_streamon_capture(void *fh)
 		s3cfb_direct_ioctl(0, S3CFB_SET_WRITEBACK, 1);
 	}
 
+	/*
+	 * FIMC2 is shared with the output path, which leaves the input set to
+	 * memory after its last frame and is not reset when it stops. Capture
+	 * then never sees a camera frame.
+	 */
+	fimc_hwset_input_source(ctrl, FIMC_SRC_CAM);
+	fimc_hwset_input_rot(ctrl, 0, 0);
+	fimc_hwset_input_flip(ctrl, 0, 0);
+
 	fimc_hwset_camera_type(ctrl);
 	fimc_hwset_camera_polarity(ctrl);
 	fimc_hwset_enable_lastend(ctrl);
