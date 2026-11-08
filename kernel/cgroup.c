@@ -1773,9 +1773,20 @@ static int cgroup_task_migrate(struct cgroup *cgrp, struct cgroup *oldcgrp,
 		struct cgroup_subsys_state *template[CGROUP_SUBSYS_COUNT];
 		read_lock(&css_set_lock);
 		newcg = find_existing_css_set(oldcg, cgrp, template);
-		BUG_ON(!newcg);
-		get_css_set(newcg);
+		if (newcg)
+			get_css_set(newcg);
 		read_unlock(&css_set_lock);
+		if (!newcg) {
+			/*
+			 * The css_sets were prefetched in cgroup_attach_proc(),
+			 * but a thread that exited since then was switched to
+			 * init_css_set, for which nothing was prefetched. Skip
+			 * it, as is done for PF_EXITING tasks below.
+			 */
+			WARN_ON_ONCE(!(tsk->flags & PF_EXITING));
+			put_css_set(oldcg);
+			return -ESRCH;
+		}
 	} else {
 		might_sleep();
 		/* find_css_set will give us newcg already referenced. */
