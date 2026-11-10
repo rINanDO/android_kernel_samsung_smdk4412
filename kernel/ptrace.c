@@ -607,7 +607,12 @@ static int ptrace_resume(struct task_struct *child, long request,
 	return 0;
 }
 
-#ifdef CONFIG_HAVE_ARCH_TRACEHOOK
+/*
+ * ARM has user_regset definitions (task_user_regset_view) but does not
+ * select HAVE_ARCH_TRACEHOOK in this kernel, so PTRACE_GETREGSET failed with
+ * EIO and crash_dump/debuggerd could not read any registers.
+ */
+#if defined(CONFIG_HAVE_ARCH_TRACEHOOK) || defined(CONFIG_ARM)
 
 static const struct user_regset *
 find_regset(const struct user_regset_view *view, unsigned int type)
@@ -794,7 +799,7 @@ int ptrace_request(struct task_struct *child, long request,
 			return 0;
 		return ptrace_resume(child, request, SIGKILL);
 
-#ifdef CONFIG_HAVE_ARCH_TRACEHOOK
+#if defined(CONFIG_HAVE_ARCH_TRACEHOOK) || defined(CONFIG_ARM)
 	case PTRACE_GETREGSET:
 	case PTRACE_SETREGSET:
 	{
