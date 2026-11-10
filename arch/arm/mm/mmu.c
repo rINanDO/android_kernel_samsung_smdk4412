@@ -752,6 +752,16 @@ static int __init early_vmalloc(char *arg)
 			vmalloc_reserve >> 20);
 	}
 
+	/*
+	 * The bootloader's arguments come after CONFIG_CMDLINE: never let a
+	 * later, smaller vmalloc= shrink the area the kernel config asked for.
+	 */
+	if ((void *)(VMALLOC_END - vmalloc_reserve) > vmalloc_min) {
+		printk(KERN_INFO "vmalloc: ignoring smaller vmalloc=%luMB\n",
+			vmalloc_reserve >> 20);
+		return 0;
+	}
+
 	vmalloc_min = (void *)(VMALLOC_END - vmalloc_reserve);
 	return 0;
 }
