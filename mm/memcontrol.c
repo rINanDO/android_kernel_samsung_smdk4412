@@ -3791,6 +3791,8 @@ static int mem_cgroup_force_empty(struct mem_cgroup *mem, bool free_all)
 	int ret;
 	int node, zid, shrink;
 	int nr_retries = MEM_CGROUP_RECLAIM_RETRIES;
+	int stuck = 0;
+	u64 usage, last_usage = ULLONG_MAX;
 	struct cgroup *cgrp = mem->css.cgroup;
 
 	css_get(&mem->css);
@@ -3830,6 +3832,20 @@ move_account:
 		/* it seems parent cgroup doesn't have enough mem */
 		if (ret == -ENOMEM)
 			goto try_to_free;
+		/*
+		 * Charges that aren't on any LRU list can't be moved, and
+		 * then this loop never ends. rmdir from init blocked the
+		 * whole shutdown this way. Give up when nothing has moved
+		 * for a while; the cgroup just stays.
+		 */
+		usage = res_counter_read_u64(&mem->res, RES_USAGE);
+		if (usage < last_usage) {
+			last_usage = usage;
+			stuck = 0;
+		} else if (++stuck >= 20) {
+			ret = -EBUSY;
+			goto out;
+		}
 		cond_resched();
 	/* "ret" should also be checked to ensure all lists are empty. */
 	} while (mem->res.usage > 0 || ret);
