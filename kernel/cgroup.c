@@ -1763,6 +1763,16 @@ static int cgroup_task_migrate(struct cgroup *cgrp, struct cgroup *oldcgrp,
 	 * old one without taking cgroup_mutex.
 	 */
 	task_lock(tsk);
+	/*
+	 * An exiting task may already have been switched to init_css_set by
+	 * cgroup_exit() after cgroup_attach_proc() prefetched the css_sets, so
+	 * the guaranteed css_set may not exist. PF_EXITING is set before
+	 * cgroup_exit() runs, so skip such a task here.
+	 */
+	if (guarantee && (tsk->flags & PF_EXITING)) {
+		task_unlock(tsk);
+		return -ESRCH;
+	}
 	oldcg = tsk->cgroups;
 	get_css_set(oldcg);
 	task_unlock(tsk);
