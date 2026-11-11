@@ -304,9 +304,16 @@ static void ffs_function_enable(struct android_usb_function *f)
 	} else {
 		/*
 		 * Call functionfs_bind to handle the case where userspace
-		 * passed descriptors before updating enabled functions list
+		 * passed descriptors before updating enabled functions list.
+		 * If the daemon kept the function bound across a composition
+		 * change, only give its strings new ids: enable_store() has
+		 * reset the composite device's string id counter.
 		 */
-		ret = functionfs_bind(config->data, dev->cdev);
+		if (test_bit(FFS_FL_BOUND, &config->data->flags))
+			ret = functionfs_assign_string_ids(config->data,
+							   dev->cdev);
+		else
+			ret = functionfs_bind(config->data, dev->cdev);
 		if (ret)
 			pr_err("%s: functionfs_bind failed (%d)\n", __func__,
 									ret);
