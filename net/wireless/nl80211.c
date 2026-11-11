@@ -4141,19 +4141,20 @@ static int nl80211_trigger_scan(struct sk_buff *skb, struct genl_info *info)
 
 	i = 0;
 	if (info->attrs[NL80211_ATTR_SCAN_FREQUENCIES]) {
-		/* user specified, bail out if channel not found */
 		nla_for_each_nested(attr, info->attrs[NL80211_ATTR_SCAN_FREQUENCIES], tmp) {
 			struct ieee80211_channel *chan;
 
 			chan = ieee80211_get_channel(wiphy, nla_get_u32(attr));
 
-			if (!chan) {
-				err = -EINVAL;
-				goto out_free;
-			}
-
-			/* ignore disabled channels */
-			if (chan->flags & IEEE80211_CHAN_DISABLED)
+			/*
+			 * Skip channels the driver doesn't register (bcmdhd
+			 * drops channel 14 when the country only allows 1-13)
+			 * like disabled ones, instead of failing the scan.
+			 * Userspace that can't read the band list from this
+			 * kernel asks for all 2.4 GHz channels. If none of the
+			 * requested channels is usable, the scan still fails.
+			 */
+			if (!chan || chan->flags & IEEE80211_CHAN_DISABLED)
 				continue;
 
 			request->channels[i] = chan;
