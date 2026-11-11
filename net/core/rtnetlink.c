@@ -2021,9 +2021,14 @@ static int rtnetlink_rcv_msg(struct sk_buff *skb, struct nlmsghdr *nlh)
 		while (RTA_OK(attr, attrlen)) {
 			unsigned int flavor = attr->rta_type & NLA_TYPE_MASK;
 			if (flavor) {
-				if (flavor > rta_max[sz_idx])
-					return -EINVAL;
-				rta_buf[flavor-1] = attr;
+				/*
+				 * Newer userspace sends attributes this kernel
+				 * doesn't know (e.g. IFA_FLAGS, added in 3.14).
+				 * Skip them like nla_parse() does instead of
+				 * failing the whole request with -EINVAL.
+				 */
+				if (flavor <= rta_max[sz_idx])
+					rta_buf[flavor-1] = attr;
 			}
 			attr = RTA_NEXT(attr, attrlen);
 		}
