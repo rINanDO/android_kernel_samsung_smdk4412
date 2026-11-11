@@ -1115,11 +1115,53 @@ err:
 	return -ENFILE;
 }
 
+/*
+ * Allocation layout used by Android's legacy libion (kernels 3.4 - 4.11):
+ * the heap mask moved out of flags into its own field. Codec2 and other
+ * current userspace allocate with it; this kernel takes the heap id mask
+ * in flags, and the new caching flags have no meaning here.
+ */
+struct ion_allocation_data_v2 {
+	size_t len;
+	size_t align;
+	unsigned int heap_id_mask;
+	unsigned int flags;
+	struct ion_handle *handle;
+};
+
+#define ION_IOC_ALLOC_V2	_IOWR(ION_IOC_MAGIC, 0, \
+				      struct ion_allocation_data_v2)
+
+/*
+ * ION_IOC_IMPORT always took a struct ion_fd_data, but this kernel declares
+ * it with an int argument, so its number differs from the one userspace
+ * computes from the struct.
+ */
+#define ION_IOC_IMPORT_V2	_IOWR(ION_IOC_MAGIC, 5, struct ion_fd_data)
+
 static long ion_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
 	struct ion_client *client = filp->private_data;
 
 	switch (cmd) {
+	case ION_IOC_ALLOC_V2:
+	{
+		struct ion_allocation_data_v2 data;
+
+		if (copy_from_user(&data, (void __user *)arg, sizeof(data)))
+			return -EFAULT;
+		data.handle = ion_alloc(client, data.len, data.align,
+					data.heap_id_mask);
+
+		if (IS_ERR(data.handle))
+			return PTR_ERR(data.handle);
+
+		if (copy_to_user((void __user *)arg, &data, sizeof(data))) {
+			ion_free(client, data.handle);
+			return -EFAULT;
+		}
+		break;
+	}
 	case ION_IOC_ALLOC:
 	{
 		struct ion_allocation_data data;
@@ -1175,6 +1217,7 @@ static long ion_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		break;
 	}
 	case ION_IOC_IMPORT:
+	case ION_IOC_IMPORT_V2:
 	{
 		struct ion_fd_data data;
 		if (copy_from_user(&data, (void __user *)arg,
