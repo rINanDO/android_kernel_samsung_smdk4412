@@ -842,7 +842,13 @@ first_try:
 			/* nop */
 		} else if (unlikely(wait_for_completion_interruptible(&done))) {
 			ret = -EINTR;
+			/*
+			 * The request must be given back before data and
+			 * done go away; the completion may already be
+			 * running on another CPU even if dequeue fails.
+			 */
 			usb_ep_dequeue(ep->ep, req);
+			wait_for_completion(&done);
 		} else {
 			ret = ep->status;
 			if (read && ret > 0 &&
