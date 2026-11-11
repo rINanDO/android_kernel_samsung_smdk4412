@@ -494,6 +494,94 @@ static void done(struct s3c_ep *ep, struct s3c_request *req, int status)
 	ep->stopped = stopped;
 }
 
+#define S3C_DCTL_SGOUTNAK		(1 << 9)
+#define S3C_DCTL_CGOUTNAK		(1 << 10)
+#define S3C_DIEPINT_INEPNAKEFF		(1 << 6)
+#define S3C_GRSTCTL_TXFFLSH		(1 << 5)
+#define S3C_GRSTCTL_TXFNUM(n)		((n) << 6)
+
+static bool s3c_udc_wait_bit(struct s3c_udc *dev, u32 reg, u32 bit, bool set)
+{
+	int timeout = 1000;
+
+	while (!!(__raw_readl(dev->regs + reg) & bit) != set) {
+		if (!--timeout)
+			return false;
+		udelay(1);
+	}
+	return true;
+}
+
+/*
+ * s3c_ep_stop_xfer - stop the transfer of the first request on @ep
+ *
+ * The controller DMAs straight into the request's buffer. Giving the request
+ * back without disabling the endpoint left the DMA armed, so the next packet
+ * from the host landed in a buffer the gadget driver had already freed (seen
+ * as adb's "OKAY" in a slab freelist). Also drop a TRANSFER_DONE that is
+ * still pending so the irq handler doesn't complete the next request with
+ * this transfer's length. Called with dev->lock held and irqs off.
+ */
+static void s3c_ep_stop_xfer(struct s3c_ep *ep)
+{
+	struct s3c_udc *dev = ep->dev;
+	u32 ep_num = ep_index(ep);
+	u32 ctrl;
+	bool ok = true;
+
+	if (!ep_num || !dev->udc_enabled || list_empty(&ep->queue))
+		return;
+
+	if (ep_is_in(ep)) {
+		ctrl = __raw_readl(dev->regs + S3C_UDC_OTG_DIEPCTL(ep_num));
+		if (ctrl & DEPCTL_EPENA) {
+			__raw_writel(ctrl | DEPCTL_SNAK,
+				     dev->regs + S3C_UDC_OTG_DIEPCTL(ep_num));
+			ok = s3c_udc_wait_bit(dev, S3C_UDC_OTG_DIEPINT(ep_num),
+					      S3C_DIEPINT_INEPNAKEFF, true);
+			ctrl = __raw_readl(dev->regs + S3C_UDC_OTG_DIEPCTL(ep_num));
+			__raw_writel(ctrl | DEPCTL_EPDIS | DEPCTL_SNAK,
+				     dev->regs + S3C_UDC_OTG_DIEPCTL(ep_num));
+			ok &= s3c_udc_wait_bit(dev, S3C_UDC_OTG_DIEPINT(ep_num),
+					       EPDISBLD, true);
+#ifdef DED_TX_FIFO
+			__raw_writel(S3C_GRSTCTL_TXFNUM(ep_num) | S3C_GRSTCTL_TXFFLSH,
+				     dev->regs + S3C_UDC_OTG_GRSTCTL);
+#else
+			__raw_writel(S3C_GRSTCTL_TXFNUM(0) | S3C_GRSTCTL_TXFFLSH,
+				     dev->regs + S3C_UDC_OTG_GRSTCTL);
+#endif
+			ok &= s3c_udc_wait_bit(dev, S3C_UDC_OTG_GRSTCTL,
+					       S3C_GRSTCTL_TXFFLSH, false);
+		}
+		__raw_writel(EPDISBLD | S3C_DIEPINT_INEPNAKEFF | TRANSFER_DONE,
+			     dev->regs + S3C_UDC_OTG_DIEPINT(ep_num));
+	} else {
+		ctrl = __raw_readl(dev->regs + S3C_UDC_OTG_DOEPCTL(ep_num));
+		if (ctrl & DEPCTL_EPENA) {
+			u32 dctl = __raw_readl(dev->regs + S3C_UDC_OTG_DCTL);
+
+			__raw_writel(dctl | S3C_DCTL_SGOUTNAK,
+				     dev->regs + S3C_UDC_OTG_DCTL);
+			ok = s3c_udc_wait_bit(dev, S3C_UDC_OTG_GINTSTS,
+					      INT_GOUTNakEff, true);
+			ctrl = __raw_readl(dev->regs + S3C_UDC_OTG_DOEPCTL(ep_num));
+			__raw_writel(ctrl | DEPCTL_EPDIS | DEPCTL_SNAK,
+				     dev->regs + S3C_UDC_OTG_DOEPCTL(ep_num));
+			ok &= s3c_udc_wait_bit(dev, S3C_UDC_OTG_DOEPINT(ep_num),
+					       EPDISBLD, true);
+			dctl = __raw_readl(dev->regs + S3C_UDC_OTG_DCTL);
+			__raw_writel(dctl | S3C_DCTL_CGOUTNAK,
+				     dev->regs + S3C_UDC_OTG_DCTL);
+		}
+		__raw_writel(EPDISBLD | TRANSFER_DONE,
+			     dev->regs + S3C_UDC_OTG_DOEPINT(ep_num));
+	}
+
+	if (!ok)
+		pr_warn("%s: timeout stopping %s\n", __func__, ep->ep.name);
+}
+
 /*
  *	nuke - dequeue ALL requests
  */
@@ -772,7 +860,8 @@ static int s3c_ep_disable(struct usb_ep *_ep)
 
 	spin_lock_irqsave(&ep->dev->lock, flags);
 
-	/* Nuke all pending requests */
+	/* Stop the hardware, then nuke all pending requests */
+	s3c_ep_stop_xfer(ep);
 	nuke(ep, -ESHUTDOWN);
 
 	ep->desc = 0;
@@ -836,7 +925,23 @@ static int s3c_dequeue(struct usb_ep *_ep, struct usb_request *_req)
 		return -EINVAL;
 	}
 
-	done(ep, req, -ECONNRESET);
+	/* the first request is the one the hardware is working on */
+	if (ep->queue.next == &req->queue) {
+		s3c_ep_stop_xfer(ep);
+		done(ep, req, -ECONNRESET);
+
+		/* start the next one, as the irq handler would have */
+		if (ep->desc && !ep->stopped && !list_empty(&ep->queue)) {
+			req = list_entry(ep->queue.next, struct s3c_request,
+					 queue);
+			if (ep_is_in(ep))
+				setdma_tx(ep, req);
+			else
+				setdma_rx(ep, req);
+		}
+	} else {
+		done(ep, req, -ECONNRESET);
+	}
 
 	spin_unlock_irqrestore(&ep->dev->lock, flags);
 	return 0;
