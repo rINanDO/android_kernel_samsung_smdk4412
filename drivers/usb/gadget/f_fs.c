@@ -1368,26 +1368,21 @@ static void ffs_data_reset(struct ffs_data *ffs)
 }
 
 
-static int functionfs_bind(struct ffs_data *ffs, struct usb_composite_dev *cdev)
+/*
+ * Give the function's strings ids from the composite device.  Also called
+ * when the composition changes while the function stays bound (the daemon
+ * kept its endpoints open): the composite device starts counting string ids
+ * from 1 again then.
+ */
+static int functionfs_assign_string_ids(struct ffs_data *ffs,
+					struct usb_composite_dev *cdev)
 {
 	struct usb_gadget_strings **lang;
 	int first_id;
 
-	ENTER();
-
-	if (WARN_ON(ffs->state != FFS_ACTIVE
-		 || test_and_set_bit(FFS_FL_BOUND, &ffs->flags)))
-		return -EBADFD;
-
 	first_id = usb_string_ids_n(cdev, ffs->strings_count);
 	if (unlikely(first_id < 0))
 		return first_id;
-
-	ffs->ep0req = usb_ep_alloc_request(cdev->gadget->ep0, GFP_KERNEL);
-	if (unlikely(!ffs->ep0req))
-		return -ENOMEM;
-	ffs->ep0req->complete = ffs_ep0_complete;
-	ffs->ep0req->context = ffs;
 
 	lang = ffs->stringtabs;
 	if (lang) {
@@ -1398,6 +1393,33 @@ static int functionfs_bind(struct ffs_data *ffs, struct usb_composite_dev *cdev)
 				str->id = id;
 		}
 	}
+
+	return 0;
+}
+
+static int functionfs_bind(struct ffs_data *ffs, struct usb_composite_dev *cdev)
+{
+	int ret;
+
+	ENTER();
+
+	if (WARN_ON(ffs->state != FFS_ACTIVE
+		 || test_and_set_bit(FFS_FL_BOUND, &ffs->flags)))
+		return -EBADFD;
+
+	ret = functionfs_assign_string_ids(ffs, cdev);
+	if (unlikely(ret < 0)) {
+		clear_bit(FFS_FL_BOUND, &ffs->flags);
+		return ret;
+	}
+
+	ffs->ep0req = usb_ep_alloc_request(cdev->gadget->ep0, GFP_KERNEL);
+	if (unlikely(!ffs->ep0req)) {
+		clear_bit(FFS_FL_BOUND, &ffs->flags);
+		return -ENOMEM;
+	}
+	ffs->ep0req->complete = ffs_ep0_complete;
+	ffs->ep0req->context = ffs;
 
 	ffs->gadget = cdev->gadget;
 	ffs_data_get(ffs);
