@@ -10,10 +10,12 @@ busybox mount -t proc proc /proc
 busybox mount -t sysfs sysfs /sys
 
 load_image=/stage1/boot.cpio
+recovery=false
 
 if busybox grep -q bootmode=2 /proc/cmdline ; then
 
     # recovery boot
+    recovery=true
 
     # if the raw /dev/block/platform/dw_mmc/by-name/RECOVERY
     # partition contains valid lzop-compressed data
@@ -24,9 +26,45 @@ if busybox grep -q bootmode=2 /proc/cmdline ; then
             load_image=/stage1/isorec.cpio
         fi
     fi
+
+else
+
+    # Android boot: use the ramdisk in the slot on HIDDEN when it is valid
+    # and was patched from this kernel's ramdisk (a Magisk-patched copy,
+    # written by the Magisk installer zip from TWRP). Header (first sector):
+    #   I9100RD 1 <sectors> <sha1 of data> <sha1 of stock ramdisk>
+    # HIDDEN is mmcblk0p12: with CONFIG_MMC_BLOCK_MINORS=12 it has an extended
+    # device number (259:x), not the 179:12 of the static node in the
+    # initramfs list, so make the node from sysfs
+    slot_dev=/stage1/hidden
+    devnum=$(busybox cat /sys/class/block/mmcblk0p12/dev)
+    busybox mknod $slot_dev b ${devnum%:*} ${devnum#*:}
+    slot_off=2048
+    set -- $(busybox dd if=$slot_dev bs=512 skip=$slot_off count=1 2>/dev/null | busybox head -n 1)
+    if [ "$1" = I9100RD ] && [ "$2" = 1 ] && [ -n "$5" ] && [ "$3" -gt 0 ] && [ "$3" -le 14335 ] ; then
+        stock_sha=$(busybox sha1sum /stage1/boot.cpio | busybox cut -d' ' -f1)
+        if [ "$5" = "$stock_sha" ] ; then
+            busybox dd if=$slot_dev bs=512 skip=$((slot_off + 1)) count=$3 > /stage1/slot.cpio 2>/dev/null
+            slot_sha=$(busybox sha1sum /stage1/slot.cpio | busybox cut -d' ' -f1)
+            if [ "$4" = "$slot_sha" ] && busybox cpio -t < /stage1/slot.cpio > /dev/null ; then
+                echo "stage1: booting the ramdisk slot"
+                load_image=/stage1/slot.cpio
+            else
+                echo "stage1: ramdisk slot is corrupt, booting the stock ramdisk"
+            fi
+        else
+            echo "stage1: ramdisk slot was made for another kernel, booting the stock ramdisk"
+        fi
+    fi
+
 fi
 
 busybox cpio -i < ${load_image}
+
+# Let the Magisk installer in TWRP patch exactly the ramdisk of this kernel
+if $recovery ; then
+    busybox cp /stage1/boot.cpio /.stock-boot.cpio
+fi
 
 busybox umount /sys
 busybox umount /proc
@@ -34,4 +72,3 @@ busybox date >>boot.txt
 busybox rm -fr /stage1 /dev/*
 export PATH="${_PATH}"
 exec /init
-
