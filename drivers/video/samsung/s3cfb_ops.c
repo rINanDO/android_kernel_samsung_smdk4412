@@ -1733,8 +1733,10 @@ static int s3c_fb_set_win_buffer(struct s3cfb_global *fbdev,
 		struct fb_info *fb, struct s3c_fb_win_config *win_config,
 		struct s3c_reg_data *regs)
 {
+	struct s3c_platform_fb *pdata = to_fb_plat(fbdev->dev);
 	struct s3cfb_window *win = fb->par;
 	struct fb_var_screeninfo prev_var = fb->var;
+	struct fb_fix_screeninfo prev_fix = fb->fix;
 	unsigned short win_no = win->id;
 	int ret;
 	size_t window_size;
@@ -1921,6 +1923,20 @@ static int s3c_fb_set_win_buffer(struct s3cfb_global *fbdev,
 		}
 		regs->blendeq[win_no - 1] = blendeq(win_config->blending,
 				fb->var.transp.length, win_config->plane_alpha);
+	}
+
+	/*
+	 * The default window's fb_info is the framebuffer device (fb0):
+	 * gralloc maps its memory for the framebuffer target, and the
+	 * framebuffer target is scanned out from that memory. Don't leave
+	 * the address of a buffer the composer put on this window in it,
+	 * or the next mmap of fb0 maps that buffer instead, and the GPU
+	 * composes into memory that isn't scanned out (black screen after
+	 * the screen was off once).
+	 */
+	if (win_no == pdata->default_win) {
+		fb->var = prev_var;
+		fb->fix = prev_fix;
 	}
 
 	return 0;
