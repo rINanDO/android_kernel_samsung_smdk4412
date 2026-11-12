@@ -34,8 +34,8 @@ else
     # written by the Magisk installer zip from TWRP). Header (first sector):
     #   I9100RD 1 <sectors> <sha1 of data> <sha1 of stock ramdisk>
     # HIDDEN is mmcblk0p12: with CONFIG_MMC_BLOCK_MINORS=12 it has an extended
-    # device number (259:x), not the 179:12 of the static node in the
-    # initramfs list, so make the node from sysfs
+    # device number (259:x), which the kernel hands out dynamically, so make
+    # the node from sysfs instead of trusting the static one
     slot_dev=/stage1/hidden
     devnum=$(busybox cat /sys/class/block/mmcblk0p12/dev)
     busybox mknod $slot_dev b ${devnum%:*} ${devnum#*:}
