@@ -6926,10 +6926,10 @@ int dhd_os_wake_lock_timeout(dhd_pub_t *pub)
 			dhd->wakelock_rx_timeout_enable : dhd->wakelock_ctrl_timeout_enable;
 		if (dhd->wakelock_rx_timeout_enable)
 			__pm_wakeup_event(&dhd->wl_rxwake,
-				msecs_to_jiffies(dhd->wakelock_rx_timeout_enable) / HZ * 1000);
+				dhd->wakelock_rx_timeout_enable);
 		if (dhd->wakelock_ctrl_timeout_enable)
 			__pm_wakeup_event(&dhd->wl_ctrlwake,
-				msecs_to_jiffies(dhd->wakelock_ctrl_timeout_enable) / HZ * 1000);
+				dhd->wakelock_ctrl_timeout_enable);
 		dhd->wakelock_rx_timeout_enable = 0;
 		dhd->wakelock_ctrl_timeout_enable = 0;
 		spin_unlock_irqrestore(&dhd->wakelock_spinlock, flags);

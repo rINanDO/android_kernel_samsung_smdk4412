@@ -1047,7 +1047,7 @@ static int if_usb_suspend(struct usb_interface *intf, pm_message_t message)
 
 	if (devdata->usb_ld->suspended == LINKPM_DEV_NUM) {
 		mif_debug("[if_usb_suspended]\n");
-		__pm_wakeup_event(&pm_data->l2_wake, msecs_to_jiffies(50) / HZ * 1000);
+		__pm_wakeup_event(&pm_data->l2_wake, 50);
 #ifdef	CONFIG_SLP
 		pm_wakeup_event(pm_data->miscdev.this_device,
 				msecs_to_jiffies(20));
