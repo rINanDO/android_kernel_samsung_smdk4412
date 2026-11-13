@@ -588,8 +588,12 @@ static int link_pm_runtime_get_active(struct link_pm_data *pm_data)
 	if (pm_data->dpm_suspending) {
 		mif_err("Kernel in suspending try get_active later\n");
 		/* during dpm_suspending..
-		 * if AP get tx data, wake up. */
-		__pm_stay_awake(&pm_data->l2_wake);
+		 * if AP get tx data, wake up. l2_wake is only released when
+		 * the link suspends, which never happens if it stays
+		 * suspended, so abort the suspend with a timed event and
+		 * resume the link afterwards instead. */
+		pm_data->resume_after_suspend = true;
+		__pm_wakeup_event(&pm_data->suspend_abort_wake, 500);
 		return -EAGAIN;
 	}
 
@@ -867,8 +871,13 @@ static irqreturn_t link_pm_irq_handler(int irq, void *data)
 	*/
 	if (pm_data->dpm_suspending) {
 		mif_info("ignore request by suspending\n");
-		/* Ignore HWK but AP got to L2 by suspending fail */
-		__pm_stay_awake(&pm_data->l2_wake);
+		/* Ignore HWK but AP got to L2 by suspending fail. Holding
+		 * l2_wake here kept the AP awake for good when the link stayed
+		 * suspended: abort the suspend with a timed event, and resume
+		 * the link after the resume if the CP still wants it. */
+		if (value == HOSTWAKE_TRIGLEVEL)
+			pm_data->resume_after_suspend = true;
+		__pm_wakeup_event(&pm_data->suspend_abort_wake, 500);
 		return IRQ_HANDLED;
 	}
 
@@ -1001,8 +1010,10 @@ static int link_pm_notifier_event(struct notifier_block *this,
 	case PM_POST_RESTORE:
 #endif
 		pm_data->dpm_suspending = false;
-		if (gpio_get_value(pm_data->gpio_link_hostwake)
+		if (pm_data->resume_after_suspend ||
+			gpio_get_value(pm_data->gpio_link_hostwake)
 			== HOSTWAKE_TRIGLEVEL) {
+			pm_data->resume_after_suspend = false;
 			queue_delayed_work(pm_data->wq, &pm_data->link_pm_work,
 				0);
 			mif_info("post resume\n");
@@ -1530,6 +1541,7 @@ static int usb_link_pm_init(struct usb_link_device *usb_ld, void *data)
 	wakeup_source_init(&pm_data->boot_wake, "boot_hsic");
 	wakeup_source_init(&pm_data->rpm_wake, "rpm_hsic");
 	wakeup_source_init(&pm_data->tx_async_wake, "tx_hsic");
+	wakeup_source_init(&pm_data->suspend_abort_wake, "hwk_hsic");
 
 #if defined(CONFIG_SLP)
 	device_init_wakeup(pm_data->miscdev.this_device, true);
