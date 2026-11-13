@@ -96,8 +96,12 @@ struct link_pm_data {
 	struct wakeup_source boot_wake;
 	struct wakeup_source rpm_wake;
 	struct wakeup_source tx_async_wake;
+	/* aborts a system suspend when the link is needed while suspending */
+	struct wakeup_source suspend_abort_wake;
 	struct notifier_block pm_notifier;
 	bool dpm_suspending;
+	/* the link was needed while suspending: resume it after the resume */
+	bool resume_after_suspend;
 
 	/* Host wakeup toggle debugging */
 	unsigned ipc_debug_cnt;
