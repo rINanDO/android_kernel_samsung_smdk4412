@@ -534,7 +534,15 @@ static irqreturn_t fimc_irq(int irq, void *dev_id)
 	struct fimc_control *ctrl = (struct fimc_control *) dev_id;
 	struct s3c_platform_fimc *pdata;
 
-	if (ctrl->cap)
+	/*
+	 * A controller can have both a capture and an output user: the camera
+	 * sets up capture on FIMC2 when it opens, while the composer uses it
+	 * for output. Send the interrupt of a running output job to the output
+	 * handler; the capture handler has no buffers then and crashes.
+	 */
+	if (ctrl->out && ctrl->out->idxs.active.ctx >= 0)
+		fimc_irq_out(ctrl);
+	else if (ctrl->cap)
 		fimc_irq_cap(ctrl);
 	else if (ctrl->out)
 		fimc_irq_out(ctrl);
