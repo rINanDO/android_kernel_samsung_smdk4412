@@ -1743,7 +1743,9 @@ int fimc_stop_capture(struct fimc_control *ctrl)
 		return -ENODEV;
 	}
 
-	if ((ctrl->cam->id != CAMERA_WB) && (ctrl->cam->id != CAMERA_WB_B)) {
+	/* FIMC2 doesn't use the subdevice here; see fimc_streamoff_capture */
+	if ((ctrl->cam->id != CAMERA_WB) && (ctrl->cam->id != CAMERA_WB_B) &&
+			ctrl->id != FIMC2) {
 		if (!ctrl->cam->sd) {
 			fimc_err("%s: No subdevice.\n", __func__);
 			return -ENODEV;
@@ -2023,7 +2025,14 @@ int fimc_streamoff_capture(void *fh)
 		return -ENODEV;
 	}
 
-	if ((ctrl->cam->id != CAMERA_WB) && (ctrl->cam->id != CAMERA_WB_B)) {
+	/*
+	 * FIMC2 records from the camera that FIMC0 drives and only sends the
+	 * sensor calls that tolerate a missing subdevice. When the camera is
+	 * closed first (the app is killed while recording), still stop it, or
+	 * FIMC2 stays marked as streaming and later recordings fail.
+	 */
+	if ((ctrl->cam->id != CAMERA_WB) && (ctrl->cam->id != CAMERA_WB_B) &&
+			ctrl->id != FIMC2) {
 		if (!ctrl->cam->sd) {
 			fimc_err("%s: No subdevice.\n", __func__);
 			return -ENODEV;
