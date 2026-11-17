@@ -323,6 +323,76 @@ out:
 	return retval;
 }
 
+static unsigned long vma_compute_subtree_gap(struct vm_area_struct *vma)
+{
+	unsigned long max, subtree_gap;
+	max = vma->vm_start;
+	if (vma->vm_prev)
+		max -= vma->vm_prev->vm_end;
+	if (vma->vm_rb.rb_left) {
+		subtree_gap = rb_entry(vma->vm_rb.rb_left,
+				struct vm_area_struct, vm_rb)->rb_subtree_gap;
+		if (subtree_gap > max)
+			max = subtree_gap;
+	}
+	if (vma->vm_rb.rb_right) {
+		subtree_gap = rb_entry(vma->vm_rb.rb_right,
+				struct vm_area_struct, vm_rb)->rb_subtree_gap;
+		if (subtree_gap > max)
+			max = subtree_gap;
+	}
+	return max;
+}
+
+/*
+ * The rb_augment_* helpers call this bottom-up along the path that an
+ * insertion or an erase rebalanced, so the children are already right.
+ */
+static void vma_gap_callback(struct rb_node *rb, void *unused)
+{
+	struct vm_area_struct *vma = rb_entry(rb, struct vm_area_struct, vm_rb);
+
+	vma->rb_subtree_gap = vma_compute_subtree_gap(vma);
+}
+
+/*
+ * Update augmented rbtree rb_subtree_gap values after vma->vm_start or
+ * vma->vm_prev->vm_end values changed, without modifying the vma's position
+ * in the rbtree.
+ */
+static void vma_gap_update(struct vm_area_struct *vma)
+{
+	struct rb_node *rb = &vma->vm_rb;
+
+	while (rb) {
+		struct vm_area_struct *node;
+		unsigned long gap;
+
+		node = rb_entry(rb, struct vm_area_struct, vm_rb);
+		gap = vma_compute_subtree_gap(node);
+		if (node->rb_subtree_gap == gap)
+			break;
+		node->rb_subtree_gap = gap;
+		rb = rb_parent(rb);
+	}
+}
+
+static inline void vma_rb_insert(struct vm_area_struct *vma,
+				 struct rb_root *root)
+{
+	rb_insert_color(&vma->vm_rb, root);
+	rb_augment_insert(&vma->vm_rb, vma_gap_callback, NULL);
+}
+
+static void vma_rb_erase(struct vm_area_struct *vma, struct rb_root *root)
+{
+	struct rb_node *deepest;
+
+	deepest = rb_augment_erase_begin(&vma->vm_rb);
+	rb_erase(&vma->vm_rb, root);
+	rb_augment_erase_end(deepest, vma_gap_callback, NULL);
+}
+
 #ifdef DEBUG_MM_RB
 static int browse_rb(struct rb_root *root)
 {
@@ -353,6 +423,24 @@ static int browse_rb(struct rb_root *root)
 	return i;
 }
 
+static int validate_gaps(struct mm_struct *mm)
+{
+	struct rb_node *nd;
+	int bug = 0;
+
+	for (nd = rb_first(&mm->mm_rb); nd; nd = rb_next(nd)) {
+		struct vm_area_struct *vma;
+		vma = rb_entry(nd, struct vm_area_struct, vm_rb);
+		if (vma->rb_subtree_gap != vma_compute_subtree_gap(vma)) {
+			printk("free gap %lx, correct %lx\n",
+			       vma->rb_subtree_gap,
+			       vma_compute_subtree_gap(vma));
+			bug = 1;
+		}
+	}
+	return bug;
+}
+
 void validate_mm(struct mm_struct *mm)
 {
 	int bug = 0;
@@ -367,6 +455,16 @@ void validate_mm(struct mm_struct *mm)
 	i = browse_rb(&mm->mm_rb);
 	if (i != mm->map_count)
 		printk("map_count %d rb %d\n", mm->map_count, i), bug = 1;
+	if (validate_gaps(mm))
+		bug = 1;
+	tmp = mm->mmap;
+	while (tmp && tmp->vm_next)
+		tmp = tmp->vm_next;
+	if (tmp && tmp->vm_end != mm->highest_vm_end) {
+		printk("vm_end %lx highest_vm_end %lx\n",
+		       tmp->vm_end, mm->highest_vm_end);
+		bug = 1;
+	}
 	BUG_ON(bug);
 }
 #else
@@ -414,7 +512,14 @@ void __vma_link_rb(struct mm_struct *mm, struct vm_area_struct *vma,
 		struct rb_node **rb_link, struct rb_node *rb_parent)
 {
 	rb_link_node(&vma->vm_rb, rb_parent, rb_link);
-	rb_insert_color(&vma->vm_rb, &mm->mm_rb);
+	vma->rb_subtree_gap = 0;
+	vma_rb_insert(vma, &mm->mm_rb);
+
+	/* Update tracking information for the gap following the new vma. */
+	if (vma->vm_next)
+		vma_gap_update(vma->vm_next);
+	else
+		mm->highest_vm_end = vma->vm_end;
 }
 
 static void __vma_link_file(struct vm_area_struct *vma)
@@ -490,12 +595,12 @@ static inline void
 __vma_unlink(struct mm_struct *mm, struct vm_area_struct *vma,
 		struct vm_area_struct *prev)
 {
-	struct vm_area_struct *next = vma->vm_next;
+	struct vm_area_struct *next;
 
-	prev->vm_next = next;
+	vma_rb_erase(vma, &mm->mm_rb);
+	prev->vm_next = next = vma->vm_next;
 	if (next)
 		next->vm_prev = prev;
-	rb_erase(&vma->vm_rb, &mm->mm_rb);
 	if (mm->mmap_cache == vma)
 		mm->mmap_cache = prev;
 }
@@ -517,6 +622,7 @@ int vma_adjust(struct vm_area_struct *vma, unsigned long start,
 	struct prio_tree_root *root = NULL;
 	struct anon_vma *anon_vma = NULL;
 	struct file *file = vma->vm_file;
+	bool start_changed = false, end_changed = false;
 	long adjust_next = 0;
 	int remove_next = 0;
 
@@ -599,8 +705,14 @@ again:			remove_next = 1 + (end > next->vm_end);
 			vma_prio_tree_remove(next, root);
 	}
 
-	vma->vm_start = start;
-	vma->vm_end = end;
+	if (start != vma->vm_start) {
+		vma->vm_start = start;
+		start_changed = true;
+	}
+	if (end != vma->vm_end) {
+		vma->vm_end = end;
+		end_changed = true;
+	}
 	vma->vm_pgoff = pgoff;
 	if (adjust_next) {
 		next->vm_start += adjust_next << PAGE_SHIFT;
@@ -629,6 +741,15 @@ again:			remove_next = 1 + (end > next->vm_end);
 		 * (it may either follow vma or precede it).
 		 */
 		__insert_vm_struct(mm, insert);
+	} else {
+		if (start_changed)
+			vma_gap_update(vma);
+		if (end_changed) {
+			if (!next)
+				mm->highest_vm_end = end;
+			else if (!adjust_next)
+				vma_gap_update(next);
+		}
 	}
 
 	if (anon_vma)
@@ -652,10 +773,15 @@ again:			remove_next = 1 + (end > next->vm_end);
 		 * we must remove another next too. It would clutter
 		 * up the code too much to do both in one go.
 		 */
-		if (remove_next == 2) {
-			next = vma->vm_next;
+		next = vma->vm_next;
+		if (remove_next == 2)
 			goto again;
-		}
+		else if (next)
+			vma_gap_update(next);
+		else
+			mm->highest_vm_end = end;
+		if (start_changed)
+			vma_gap_update(vma);
 	}
 
 	validate_mm(mm);
@@ -1761,7 +1887,19 @@ int expand_upwards(struct vm_area_struct *vma, unsigned long address)
 		if (vma->vm_pgoff + (size >> PAGE_SHIFT) >= vma->vm_pgoff) {
 			error = acct_stack_growth(vma, size, grow);
 			if (!error) {
+				/*
+				 * The gap tracking in the rbtree can be
+				 * updated by concurrent stack expansions of
+				 * other vmas under mmap_sem read: serialise
+				 * them on page_table_lock.
+				 */
+				spin_lock(&vma->vm_mm->page_table_lock);
 				vma->vm_end = address;
+				if (vma->vm_next)
+					vma_gap_update(vma->vm_next);
+				else
+					vma->vm_mm->highest_vm_end = address;
+				spin_unlock(&vma->vm_mm->page_table_lock);
 				perf_event_mmap(vma);
 			}
 		}
@@ -1811,8 +1949,17 @@ int expand_downwards(struct vm_area_struct *vma,
 		if (grow <= vma->vm_pgoff) {
 			error = acct_stack_growth(vma, size, grow);
 			if (!error) {
+				/*
+				 * The gap tracking in the rbtree can be
+				 * updated by concurrent stack expansions of
+				 * other vmas under mmap_sem read: serialise
+				 * them on page_table_lock.
+				 */
+				spin_lock(&vma->vm_mm->page_table_lock);
 				vma->vm_start = address;
 				vma->vm_pgoff -= grow;
+				vma_gap_update(vma);
+				spin_unlock(&vma->vm_mm->page_table_lock);
 				perf_event_mmap(vma);
 			}
 		}
@@ -1932,14 +2079,17 @@ detach_vmas_to_be_unmapped(struct mm_struct *mm, struct vm_area_struct *vma,
 	insertion_point = (prev ? &prev->vm_next : &mm->mmap);
 	vma->vm_prev = NULL;
 	do {
-		rb_erase(&vma->vm_rb, &mm->mm_rb);
+		vma_rb_erase(vma, &mm->mm_rb);
 		mm->map_count--;
 		tail_vma = vma;
 		vma = vma->vm_next;
 	} while (vma && vma->vm_start < end);
 	*insertion_point = vma;
-	if (vma)
+	if (vma) {
 		vma->vm_prev = prev;
+		vma_gap_update(vma);
+	} else
+		mm->highest_vm_end = prev ? prev->vm_end : 0;
 	tail_vma->vm_next = NULL;
 	if (mm->unmap_area == arch_unmap_area)
 		addr = prev ? prev->vm_end : mm->mmap_base;
