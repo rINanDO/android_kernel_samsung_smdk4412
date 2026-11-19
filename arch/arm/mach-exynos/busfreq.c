@@ -636,16 +636,24 @@ int exynos4_busfreq_lock(unsigned int nId,
 	g_busfreq_lock_val[nId] = busfreq_level;
 
 	/* If the requested cpufreq is higher than current min frequency */
-	if (busfreq_level < g_busfreq_lock_level) {
+	if (busfreq_level < g_busfreq_lock_level)
 		g_busfreq_lock_level = busfreq_level;
+
+	/*
+	 * Only raise the bus: the monitor may already run it faster than
+	 * the lock asks for. Keep p_idx in sync, or the monitor keeps
+	 * believing in the old level and never changes it again.
+	 */
+	if (busfreq_level < p_idx) {
 		/* get the voltage value */
 		int_volt = exynos4_busfreq_table[busfreq_level].volt;
 #ifdef CONFIG_BUSFREQ_QOS
-		exynos4_set_qos(curr_idx);
+		exynos4_set_qos(busfreq_level);
 #endif
 		regulator_set_voltage(int_regulator, int_volt,
 				int_volt);
 		exynos4_set_busfreq(busfreq_level);
+		p_idx = busfreq_level;
 	}
 err:
 	mutex_unlock(&set_bus_freq_lock);
