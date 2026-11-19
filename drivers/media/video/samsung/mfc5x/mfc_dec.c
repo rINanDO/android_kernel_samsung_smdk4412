@@ -1825,11 +1825,22 @@ int mfc_init_decoding(struct mfc_inst_ctx *ctx, union mfc_args *args)
 
 #if defined(CONFIG_BUSFREQ)
 	/* Lock MFC & Bus FREQ for high resolution */
-	if (ctx->width >= MAX_HOR_RES || ctx->height >= MAX_VER_RES) {
-		if (atomic_read(&ctx->dev->busfreq_lock_cnt) == 0) {
-			exynos4_busfreq_lock(DVFS_LOCK_ID_MFC, BUS_L0);
-			mfc_dbg("Bus FREQ locked to L0\n");
-		}
+	if (ctx->width >= MAX_HOR_RES || ctx->height >= MAX_VER_RES
+#if defined(CONFIG_CPU_EXYNOS4210)
+		/*
+		 * The bus level also sets the FIMC clock here; at L1 the
+		 * colour conversion of a 720p frame no longer fits a 60 fps
+		 * stream, and the monitor only moves on cpufreq changes.
+		 */
+		|| (ctx->width >= 1280 && ctx->height >= 720)
+		|| (ctx->width >= 720 && ctx->height >= 1280)
+#endif
+		) {
+		/* Another instance may hold the MFC lock at L1: raise it */
+		if (atomic_read(&ctx->dev->busfreq_lock_cnt) != 0)
+			exynos4_busfreq_lock_free(DVFS_LOCK_ID_MFC);
+		exynos4_busfreq_lock(DVFS_LOCK_ID_MFC, BUS_L0);
+		mfc_dbg("Bus FREQ locked to L0\n");
 
 		atomic_inc(&ctx->dev->busfreq_lock_cnt);
 		ctx->busfreq_flag = true;
