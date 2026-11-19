@@ -1214,6 +1214,7 @@ static int fimc_release(struct file *filp)
 				(struct fimc_prv_data *)filp->private_data;
 	struct fimc_control *ctrl = prv_data->ctrl;
 	struct fimc_capinfo *cap;
+	bool cap_owner;
 
 	int ctx_id = prv_data->ctx_id;
 	struct s3c_platform_fimc *pdata;
@@ -1227,11 +1228,19 @@ static int fimc_release(struct file *filp)
 
 	atomic_dec(&ctrl->in_use);
 
-	if (ctrl->cap && (ctrl->status != FIMC_STREAMOFF))
+	/*
+	 * The capture state and the camera belong to the file that set up
+	 * capture. Another file using this FIMC for memory to memory
+	 * conversion mustn't tear them down while the camera still runs.
+	 */
+	cap_owner = !ctrl->cap_owner || ctrl->cap_owner == prv_data ||
+		atomic_read(&ctrl->in_use) == 0;
+
+	if (cap_owner && ctrl->cap && (ctrl->status != FIMC_STREAMOFF))
 		fimc_streamoff_capture((void *)ctrl);
 
 	/* FIXME: turning off actual working camera */
-	if (ctrl->cam && ctrl->id != FIMC2) {
+	if (cap_owner && ctrl->cam && ctrl->id != FIMC2) {
 		/* Unload the subdev (camera sensor) module,
 		 * reset related status flags */
 		fimc_release_subdev(ctrl);
@@ -1333,8 +1342,12 @@ static int fimc_release(struct file *filp)
 		}
 	}
 
-	if (ctrl->cap) {
+	if (ctrl->cap && !cap_owner) {
+		kfree(filp->private_data);
+		filp->private_data = NULL;
+	} else if (ctrl->cap) {
 		cap = ctrl->cap;
+		ctrl->cap_owner = NULL;
 		ctrl->mem.curr = ctrl->mem.base;
 		kfree(filp->private_data);
 		filp->private_data = NULL;

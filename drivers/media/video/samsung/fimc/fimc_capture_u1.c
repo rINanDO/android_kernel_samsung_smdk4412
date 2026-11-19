@@ -707,6 +707,8 @@ int fimc_s_input(struct file *file, void *fh, unsigned int i)
 		}
 #endif
 	}
+	/* The file that selects the input owns the capture state. */
+	ctrl->cap_owner = fh;
 
 #if !defined(CONFIG_MACH_PX)
 	if (fimc->active_camera == 0) {
@@ -938,6 +940,11 @@ int fimc_s_fmt_vid_capture(struct file *file, void *fh, struct v4l2_format *f)
 	int ret = 0;
 	int depth;
 	printk(KERN_INFO "%s FIMC%d\n", __func__, ctrl->id);
+
+	if (!cap) {
+		fimc_err("%s: no capture device info\n", __func__);
+		return -EINVAL;
+	}
 
 	/* rotaton, flip, dtp_mode, movie_mode and vt_mode,
 	 * sensor_output_width,height should be maintained.(by TN) */

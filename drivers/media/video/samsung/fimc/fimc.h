@@ -497,6 +497,7 @@ struct fimc_control {
 	struct fimc_limit		*limit;		/* H/W limitation */
 	struct s3c_platform_camera	*cam;		/* activated camera */
 	struct fimc_capinfo		*cap;		/* capture dev info */
+	void				*cap_owner;	/* file that set up capture */
 	struct fimc_outinfo		*out;		/* output dev info */
 	struct fimc_fbinfo		fb;		/* fimd info */
 	struct fimc_scaler		sc;		/* scaler info */
